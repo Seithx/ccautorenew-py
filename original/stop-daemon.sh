@@ -1,4 +1,5 @@
 #!/bin/bash
+[[ "$(uname -o 2>/dev/null)" == *"Msys"* ]] && echo "NOTE: On Windows, prefer: py manager.py"
 
 echo "Stopping Claude Auto Renew daemon..."
 

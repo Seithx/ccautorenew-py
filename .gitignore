@@ -1,22 +1,35 @@
-# Logs
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+dist/
+build/
+*.spec
+*.egg-info/
+
+# Logs / runtime
 *.log
 logs/
-
-# PID files
 *.pid
 
 # Test artifacts
 *.test
 *.tmp
 
-# macOS
+# OS
 .DS_Store
 
-# Editor directories and files
-.idea
-.vscode
+# Editor / IDE
+.idea/
+.vscode/
 *.swp
 *.swo
+*.code-workspace
+
+# Claude Code
+.claude/
 
 # User-specific files
 .claude-last-activity*

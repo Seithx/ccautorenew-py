@@ -1,4 +1,5 @@
 #!/bin/bash
+[[ "$(uname -o 2>/dev/null)" == *"Msys"* ]] && echo "NOTE: On Windows, prefer: py manager.py"
 
 # Claude Auto-Renewal Script
 # This script checks if Claude usage limits have reset and automatically starts a session

@@ -1,4 +1,5 @@
 #!/bin/bash
+[[ "$(uname -o 2>/dev/null)" == *"Msys"* ]] && echo "NOTE: On Windows, prefer: py manager.py"
 
 # Claude Auto-Renewal Daemon - Continuous Running Script
 # Runs continuously in the background, checking for renewal windows
@@ -10,6 +11,17 @@ START_TIME_FILE="$HOME/.claude-auto-renew-start-time"
 STOP_TIME_FILE="$HOME/.claude-auto-renew-stop-time"
 MESSAGE_FILE="$HOME/.claude-auto-renew-message"
 DISABLE_CCUSAGE=false
+
+# Portable date formatting: usage: portable_date_fmt <epoch> [format]
+portable_date_fmt() {
+    local epoch="$1"
+    local fmt="${2:-%c}"
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        date -r "$epoch" "+$fmt"
+    else
+        date -d "@$epoch" "+$fmt"
+    fi
+}
 
 # Function to log messages
 log_message() {
@@ -109,7 +121,7 @@ schedule_next_day_restart() {
     # Remove activation marker so it gets recreated tomorrow
     rm -f "${START_TIME_FILE}.activated" 2>/dev/null
     
-    log_message "🔄 Scheduled restart for tomorrow at $(date -d "@$next_start" 2>/dev/null || date -r "$next_start")"
+    log_message "Scheduled restart for tomorrow at $(portable_date_fmt "$next_start")"
     
     return 0
 }
@@ -159,10 +171,6 @@ get_minutes_until_reset() {
     
     # Try to get time remaining from ccusage
     local output=$($ccusage_cmd blocks 2>/dev/null | grep -i "time remaining" | head -1)
-    
-    if [ -z "$output" ]; then
-        output=$($ccusage_cmd blocks --live 2>/dev/null | grep -i "remaining" | head -1)
-    fi
     
     # Parse time
     local hours=0
@@ -305,14 +313,14 @@ main() {
     # Check for start and stop times
     if [ -f "$START_TIME_FILE" ]; then
         start_epoch=$(cat "$START_TIME_FILE")
-        log_message "Start time configured: $(date -d "@$start_epoch" 2>/dev/null || date -r "$start_epoch")"
+        log_message "Start time configured: $(portable_date_fmt "$start_epoch")"
     else
         log_message "No start time set - will begin monitoring immediately"
     fi
     
     if [ -f "$STOP_TIME_FILE" ]; then
         stop_epoch=$(cat "$STOP_TIME_FILE")
-        log_message "Stop time configured: $(date -d "@$stop_epoch" 2>/dev/null || date -r "$stop_epoch")"
+        log_message "Stop time configured: $(portable_date_fmt "$stop_epoch")"
     else
         log_message "No stop time set - will monitor continuously"
     fi

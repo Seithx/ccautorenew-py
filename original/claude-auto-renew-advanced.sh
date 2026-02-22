@@ -1,4 +1,5 @@
 #!/bin/bash
+[[ "$(uname -o 2>/dev/null)" == *"Msys"* ]] && echo "NOTE: On Windows, prefer: py manager.py"
 
 # Advanced Claude Auto-Renewal Script with ccusage integration
 # This version uses ccusage to get accurate reset times
@@ -34,11 +35,6 @@ parse_time_remaining() {
     
     # Try to get blocks info and extract time remaining
     local output=$($ccusage_cmd blocks 2>/dev/null | grep -i "time remaining" | head -1)
-    
-    if [ -z "$output" ]; then
-        # Try live mode for more accurate info
-        output=$($ccusage_cmd blocks --live 2>/dev/null | grep -i "remaining" | head -1)
-    fi
     
     # Extract hours and minutes from various formats
     local hours=0

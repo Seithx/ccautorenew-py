@@ -1,4 +1,5 @@
 #!/bin/bash
+[[ "$(uname -o 2>/dev/null)" == *"Msys"* ]] && echo "NOTE: On Windows, prefer: py manager.py"
 
 # Claude Daemon Manager - Start, stop, and manage the auto-renewal daemon
 
@@ -8,6 +9,27 @@ LOG_FILE="$HOME/.claude-auto-renew-daemon.log"
 START_TIME_FILE="$HOME/.claude-auto-renew-start-time"
 STOP_TIME_FILE="$HOME/.claude-auto-renew-stop-time"
 MESSAGE_FILE="$HOME/.claude-auto-renew-message"
+
+# Portable date formatting: usage: portable_date_fmt <epoch> [format]
+portable_date_fmt() {
+    local epoch="$1"
+    local fmt="${2:-%c}"
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        date -r "$epoch" "+$fmt"
+    else
+        date -d "@$epoch" "+$fmt"
+    fi
+}
+
+# Portable date-string-to-epoch: usage: portable_date_to_epoch "YYYY-MM-DD HH:MM:SS"
+portable_date_to_epoch() {
+    local datestr="$1"
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        date -j -f "%Y-%m-%d %H:%M:%S" "$datestr" +%s
+    else
+        date -d "$datestr" +%s
+    fi
+}
 
 # Colors for output
 RED='\033[0;31m'
@@ -68,8 +90,8 @@ start_daemon() {
         fi
         
         # Convert to epoch timestamp
-        START_EPOCH=$(date -d "$START_TIME" +%s 2>/dev/null || date -j -f "%Y-%m-%d %H:%M:%S" "$START_TIME" +%s 2>/dev/null)
-        
+        START_EPOCH=$(portable_date_to_epoch "$START_TIME" 2>/dev/null)
+
         if [ $? -ne 0 ]; then
             print_error "Invalid start time format. Use 'HH:MM' or 'YYYY-MM-DD HH:MM'"
             return 1
@@ -77,7 +99,7 @@ start_daemon() {
         
         # Store start time
         echo "$START_EPOCH" > "$START_TIME_FILE"
-        print_status "Daemon will start monitoring at: $(date -d "@$START_EPOCH" 2>/dev/null || date -r "$START_EPOCH")"
+        print_status "Daemon will start monitoring at: $(portable_date_fmt "$START_EPOCH")"
     else
         # Remove any existing start time (start immediately)
         rm -f "$START_TIME_FILE" 2>/dev/null
@@ -92,8 +114,8 @@ start_daemon() {
         fi
         
         # Convert to epoch timestamp
-        STOP_EPOCH=$(date -d "$STOP_TIME" +%s 2>/dev/null || date -j -f "%Y-%m-%d %H:%M:%S" "$STOP_TIME" +%s 2>/dev/null)
-        
+        STOP_EPOCH=$(portable_date_to_epoch "$STOP_TIME" 2>/dev/null)
+
         if [ $? -ne 0 ]; then
             print_error "Invalid stop time format. Use 'HH:MM' or 'YYYY-MM-DD HH:MM'"
             return 1
@@ -107,7 +129,7 @@ start_daemon() {
         
         # Store stop time
         echo "$STOP_EPOCH" > "$STOP_TIME_FILE"
-        print_status "Daemon will stop monitoring at: $(date -d "@$STOP_EPOCH" 2>/dev/null || date -r "$STOP_EPOCH")"
+        print_status "Daemon will stop monitoring at: $(portable_date_fmt "$STOP_EPOCH")"
     else
         # Remove any existing stop time
         rm -f "$STOP_TIME_FILE" 2>/dev/null
@@ -146,7 +168,7 @@ start_daemon() {
             print_status "Daemon started successfully with PID $PID"
             if [ -f "$START_TIME_FILE" ]; then
                 START_EPOCH=$(cat "$START_TIME_FILE")
-                print_status "Will begin auto-renewal at: $(date -d "@$START_EPOCH" 2>/dev/null || date -r "$START_EPOCH")"
+                print_status "Will begin auto-renewal at: $(portable_date_fmt "$START_EPOCH")"
             fi
             print_status "Logs: $LOG_FILE"
             return 0
@@ -223,16 +245,16 @@ get_daemon_status() {
         minutes=$(((time_until_start % 3600) / 60))
         DAEMON_STATUS="WAITING"
         DAEMON_STATUS_TEXT="⏰ WAITING - Will activate in ${hours}h ${minutes}m"
-        DAEMON_STATUS_DETAIL="Start time: $(date -d "@$START_EPOCH" 2>/dev/null || date -r "$START_EPOCH")"
+        DAEMON_STATUS_DETAIL="Start time: $(portable_date_fmt "$START_EPOCH")"
     elif [ -n "$STOP_EPOCH" ] && [ "$CURRENT_EPOCH" -ge "$STOP_EPOCH" ]; then
         # After stop time
         DAEMON_STATUS="STOPPED"
         DAEMON_STATUS_TEXT="🛑 STOPPED - Monitoring ended for today"
-        DAEMON_STATUS_DETAIL="Stop time: $(date -d "@$STOP_EPOCH" 2>/dev/null || date -r "$STOP_EPOCH")"
+        DAEMON_STATUS_DETAIL="Stop time: $(portable_date_fmt "$STOP_EPOCH")"
         if [ -n "$START_EPOCH" ]; then
             # Calculate next day start time
             next_start=$((START_EPOCH + 86400))
-            DAEMON_STATUS_DETAIL="$DAEMON_STATUS_DETAIL\nNext start: $(date -d "@$next_start" 2>/dev/null || date -r "$next_start")"
+            DAEMON_STATUS_DETAIL="$DAEMON_STATUS_DETAIL\nNext start: $(portable_date_fmt "$next_start")"
         fi
     else
         # Active period
@@ -243,7 +265,7 @@ get_daemon_status() {
             if [ "$time_until_stop" -gt 0 ]; then
                 hours=$((time_until_stop / 3600))
                 minutes=$(((time_until_stop % 3600) / 60))
-                DAEMON_STATUS_DETAIL="Will stop in ${hours}h ${minutes}m at: $(date -d "@$STOP_EPOCH" 2>/dev/null || date -r "$STOP_EPOCH")"
+                DAEMON_STATUS_DETAIL="Will stop in ${hours}h ${minutes}m at: $(portable_date_fmt "$STOP_EPOCH")"
             fi
         fi
     fi
@@ -268,7 +290,7 @@ get_next_renewal_estimate() {
                 minutes=$(((remaining % 3600) / 60))
                 NEXT_RENEWAL_REMAINING="${hours}h ${minutes}m"
                 next_renewal_time=$((CURRENT_EPOCH + remaining))
-                NEXT_RENEWAL_TIME=$(date -d "@$next_renewal_time" '+%H:%M' 2>/dev/null || date -r "$next_renewal_time" '+%H:%M')
+                NEXT_RENEWAL_TIME=$(portable_date_fmt "$next_renewal_time" '%H:%M')
             fi
         fi
     fi
@@ -283,7 +305,7 @@ generate_day_plan() {
     
     # Get current date for calculations
     current_date=$(date '+%Y-%m-%d')
-    day_start_epoch=$(date -d "$current_date 00:00:00" +%s 2>/dev/null || date -j -f "%Y-%m-%d %H:%M:%S" "$current_date 00:00:00" +%s 2>/dev/null)
+    day_start_epoch=$(portable_date_to_epoch "${current_date}T00:00:00" 2>/dev/null || portable_date_to_epoch "$current_date 00:00:00" 2>/dev/null)
     day_end_epoch=$((day_start_epoch + 86400))
     
     # Determine the active window for today
@@ -292,14 +314,14 @@ generate_day_plan() {
     
     if [ -n "$START_EPOCH" ]; then
         # Use today's version of start time
-        start_time_today=$(date -d "@$START_EPOCH" '+%H:%M:%S' 2>/dev/null || date -r "$START_EPOCH" '+%H:%M:%S')
-        active_start=$(date -d "$current_date $start_time_today" +%s 2>/dev/null || date -j -f "%Y-%m-%d %H:%M:%S" "$current_date $start_time_today" +%s 2>/dev/null)
+        start_time_today=$(portable_date_fmt "$START_EPOCH" '%H:%M:%S')
+        active_start=$(portable_date_to_epoch "$current_date $start_time_today" 2>/dev/null)
     fi
     
     if [ -n "$STOP_EPOCH" ]; then
         # Use today's version of stop time
-        stop_time_today=$(date -d "@$STOP_EPOCH" '+%H:%M:%S' 2>/dev/null || date -r "$STOP_EPOCH" '+%H:%M:%S')
-        active_end=$(date -d "$current_date $stop_time_today" +%s 2>/dev/null || date -j -f "%Y-%m-%d %H:%M:%S" "$current_date $stop_time_today" +%s 2>/dev/null)
+        stop_time_today=$(portable_date_fmt "$STOP_EPOCH" '%H:%M:%S')
+        active_end=$(portable_date_to_epoch "$current_date $stop_time_today" 2>/dev/null)
     fi
     
     # If we have last activity, calculate potential renewal times
@@ -314,7 +336,7 @@ generate_day_plan() {
         while [ $current_renewal -lt $day_end_epoch ]; do
             # Check if this renewal time is within active hours
             if [ $current_renewal -ge $active_start ] && [ $current_renewal -le $active_end ]; then
-                renewal_time_str=$(date -d "@$current_renewal" '+%H:%M' 2>/dev/null || date -r "$current_renewal" '+%H:%M')
+                renewal_time_str=$(portable_date_fmt "$current_renewal" '%H:%M')
                 
                 # Mark if this is the next upcoming renewal
                 if [ $current_renewal -gt $CURRENT_EPOCH ]; then
@@ -340,8 +362,8 @@ generate_day_plan() {
     # If no renewals planned, show when monitoring is active
     if [ ${#DAY_PLAN[@]} -eq 0 ]; then
         if [ -n "$START_EPOCH" ] && [ -n "$STOP_EPOCH" ]; then
-            start_time_str=$(date -d "@$START_EPOCH" '+%H:%M' 2>/dev/null || date -r "$START_EPOCH" '+%H:%M')
-            stop_time_str=$(date -d "@$STOP_EPOCH" '+%H:%M' 2>/dev/null || date -r "$STOP_EPOCH" '+%H:%M')
+            start_time_str=$(portable_date_fmt "$START_EPOCH" '%H:%M')
+            stop_time_str=$(portable_date_fmt "$STOP_EPOCH" '%H:%M')
             DAY_PLAN+=("Monitoring: $start_time_str - $stop_time_str")
             DAY_PLAN+=("(No renewals needed today)")
         else
@@ -398,12 +420,12 @@ create_progress_bar() {
     
     # Create filled portion
     for i in $(seq 1 $filled_length); do
-        filled_bar="${filled_bar}█"
+        filled_bar="${filled_bar}#"
     done
-    
-    # Create empty portion  
+
+    # Create empty portion
     for i in $(seq 1 $empty_length); do
-        empty_bar="${empty_bar}░"
+        empty_bar="${empty_bar}-"
     done
     
     # Format remaining time
