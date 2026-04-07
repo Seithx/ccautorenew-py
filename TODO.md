@@ -29,7 +29,7 @@ Bugs fixed: `tasklist` for PID checks, `.cmd` resolution via `shutil.which()`, `
 - [ ] Bulk renewal may resume a session the user is actively typing in. Options: skip very-recent-activity sessions, or let user configure which to auto-resume.
 
 ## Pending
-- [ ] Fork repo to Seithx/CCAutoRenew and push (no write access to aniketkarne/CCAutoRenew)
+- [x] Fork repo to Seithx/CCAutoRenew and push -- done 2026-04-07, issues #1-#7 created
 
 ## Observed Issues (2026-02-24 live test)
 - [ ] ccusage returns empty blocks right after renewal -- may need delay/retry before querying
