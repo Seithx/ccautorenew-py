@@ -3,7 +3,6 @@
 import json
 import logging
 import os
-import random
 import signal
 import subprocess
 import sys
@@ -13,7 +12,7 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 from notify import notify
-from session import get_latest_session_id
+from session import get_active_sessions, get_latest_session_id, scan_for_rate_limit
 
 DATA_DIR = Path.home() / ".claude-autorenew"
 CONFIG_PATH = DATA_DIR / "config.json"
@@ -22,7 +21,6 @@ ACTIVITY_PATH = DATA_DIR / "last_activity"
 LOG_PATH = DATA_DIR / "daemon.log"
 
 BLOCK_DURATION = 18000  # 5 hours in seconds
-GREETINGS = ["hi", "hello", "hey there", "good day", "greetings"]
 
 log = logging.getLogger("ccautorenew")
 
@@ -136,16 +134,14 @@ def get_minutes_until_reset(block: dict | None) -> int | None:
 
 
 def is_block_exhausted(block: dict | None) -> bool:
-    """Return True if the block was terminated early by rate limits."""
+    """Return True if a completed block ended well before its scheduled endTime.
+
+    Only checks completed blocks. Active blocks are not checked here --
+    rate limit detection is handled by JSONL scanning instead.
+    """
     if block is None:
         return False
-
-    # Active block: check tokenLimitStatus projection
     if block.get("isActive"):
-        tls = block.get("tokenLimitStatus", {})
-        if tls.get("status") in ("exceeds", "warning"):
-            log.info("Block projected to hit limit (status: %s)", tls["status"])
-            return True
         return False
 
     # Completed block: check if actualEndTime is well before endTime
@@ -193,107 +189,155 @@ def is_monitoring_active(config: dict) -> str | None:
     return None
 
 
-def should_renew(block: dict | None, minutes_remaining: int | None, config: dict) -> bool:
-    """Decide whether to trigger a renewal now."""
-    now = time.time()
-    stop = config.get("stop_epoch")
-    if stop and (stop - now) <= 600:
-        return False  # within 10 min of stop time
-
-    # Block exhausted by rate limits -> renew
-    if is_block_exhausted(block):
-        return True
-
-    # Block still active with time left -> don't renew
-    if minutes_remaining is not None:
-        if minutes_remaining <= 2:
-            return True
-        return False
-
-    # Clock fallback (ccusage unavailable)
-    last = read_last_activity()
-    if last is None:
-        return True  # no history -- start initial session
-    return (now - last) >= BLOCK_DURATION
+def _clean_env() -> dict:
+    """Return env dict without CLAUDECODE to avoid nested-session block."""
+    return {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
 
 
-# -- Session renewal ---------------------------------------------------------
-
-def start_claude_session(config: dict) -> bool:
-    """Attempt to renew the Claude session. Returns True on success."""
-    notif = config.get("notifications_enabled", True)
-
-    if config.get("resume_enabled"):
-        # Attempt 1: --continue
-        try:
-            log.info("Attempting resume via --continue")
-            result = subprocess.run(
-                [_find_cmd("claude"), "--continue", "-p", "continue working"],
-                capture_output=True, text=True, timeout=30,
-            )
-            if result.returncode == 0:
-                log.info("Resumed via --continue")
-                write_last_activity()
-                notify("CCAutoRenew", "Previous session resumed", notif)
-                return True
-            log.info("--continue failed (exit %d): %s", result.returncode, result.stderr.strip())
-        except subprocess.TimeoutExpired:
-            log.info("--continue timed out, treating as success")
-            write_last_activity()
-            notify("CCAutoRenew", "Previous session resumed", notif)
-            return True
-        except OSError as exc:
-            log.error("claude command not found for --continue: %s", exc)
-
-        # Attempt 2: -r <session_id>
-        session_id = get_latest_session_id()
-        if session_id:
-            try:
-                log.info("Attempting resume via -r %s", session_id)
-                result = subprocess.run(
-                    [_find_cmd("claude"), "-r", session_id, "-p", "continue working"],
-                    capture_output=True, text=True, timeout=30,
-                )
-                if result.returncode == 0:
-                    log.info("Resumed session %s", session_id)
-                    write_last_activity()
-                    notify("CCAutoRenew", "Previous session resumed", notif)
-                    return True
-                log.info("-r failed (exit %d): %s", result.returncode, result.stderr.strip())
-            except subprocess.TimeoutExpired:
-                log.info("-r timed out, treating as success")
-                write_last_activity()
-                notify("CCAutoRenew", "Previous session resumed", notif)
-                return True
-            except OSError as exc:
-                log.error("claude command not found for -r: %s", exc)
-        else:
-            log.info("No session files found, falling back to new session")
-
-    # New session (fallback or resume_enabled=False)
-    msg = config.get("message") or random.choice(GREETINGS)
+def _try_claude(cmd: list[str], env: dict, label: str) -> bool | None:
+    """Run a claude CLI command. Returns True=success, False=failed, None=not found."""
     try:
-        log.info("Starting new session with: %s", msg)
-        result = subprocess.run(
-            [_find_cmd("claude"), "-p", msg],
-            capture_output=True, text=True, timeout=30,
-        )
+        log.info("Trying %s: %s", label, " ".join(cmd))
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30, env=env)
         if result.returncode == 0:
-            log.info("New session started")
-            write_last_activity()
-            notify("CCAutoRenew", "New session started", notif)
+            log.info("%s succeeded", label)
             return True
-        log.error("Failed to start session (exit %d): %s", result.returncode, result.stderr.strip())
-        notify("CCAutoRenew", "Renewal failed - will retry", notif)
+        log.warning("%s failed (exit %d): %s", label, result.returncode, result.stderr.strip())
         return False
     except subprocess.TimeoutExpired:
-        log.info("Session timed out (30s) but may have started")
-        write_last_activity()
+        log.info("%s timed out (30s), treating as success", label)
         return True
     except OSError as exc:
-        log.error("claude command not found: %s", exc)
-        notify("CCAutoRenew", "Renewal failed - claude not found", notif)
-        return False
+        log.error("%s command not found: %s", label, exc)
+        return None
+
+
+def _run_renewal(config: dict, session_id: str | None = None) -> bool:
+    """Renew Claude session. Tries resume -> fork -> continue fallback chain.
+
+    session_id: if provided, targets that specific session.
+    Returns True on success.
+    """
+    notif = config.get("notifications_enabled", True)
+    env = _clean_env()  # strip CLAUDECODE to avoid nested-session block
+    claude = _find_cmd("claude")
+
+    strategies = []
+    if session_id:
+        # 1st: resume the exact session
+        strategies.append(
+            ([claude, "--resume", session_id, "-p", "continue working"], "resume")
+        )
+    # 2nd fallback: continue most recent session
+    strategies.append(
+        ([claude, "--continue", "-p", "continue working"], "continue")
+    )
+
+    for cmd, label in strategies:
+        result = _try_claude(cmd, env, label)
+        if result is None:
+            # claude not found -- no point trying other strategies
+            notify("CCAutoRenew", "Renewal failed - claude not found", notif)
+            return False
+        if result is True:
+            write_last_activity()
+            notify("CCAutoRenew", f"Session renewed ({label})", notif)
+            return True
+        # result is False -- try next strategy
+        log.info("Strategy '%s' failed, trying next", label)
+
+    log.error("All renewal strategies failed")
+    notify("CCAutoRenew", "Renewal failed - will retry", notif)
+    return False
+
+
+def _launch_visible(cmd: list[str], env: dict, label: str) -> bool | None:
+    """Launch a claude CLI command in a visible console window (fire-and-forget).
+
+    Returns True=launched, False=failed to start, None=not found.
+    """
+    try:
+        log.info("Launching visible %s: %s", label, " ".join(cmd))
+        flags = subprocess.CREATE_NEW_CONSOLE
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        title = f"CCAutoRenew - {label} - {timestamp}"
+        # Write a temp .cmd script so title/banner don't interfere with stdout
+        import uuid as _uuid
+        script = DATA_DIR / f"_launch_{_uuid.uuid4().hex[:8]}.cmd"
+        cmd_str = subprocess.list2cmdline(cmd)
+        # Extract session ID from cmd args (after --resume)
+        sid_full = ""
+        for i, arg in enumerate(cmd):
+            if arg == "--resume" and i + 1 < len(cmd):
+                sid_full = cmd[i + 1]
+                break
+        banner_lines = [
+            f"@echo off",
+            f"title {title}",
+            f"echo === CCAutoRenew ===",
+            f"echo Session: {sid_full}" if sid_full else "",
+            f"echo Project: {label}",
+            f"echo Time:    {timestamp}",
+            f"echo ===================",
+            f"echo.",
+            cmd_str,
+            f"echo.",
+            f"echo === Session ended ===",
+            f"pause",
+        ]
+        script.write_text("\n".join(line for line in banner_lines if line) + "\n", encoding="utf-8")
+        proc = subprocess.Popen(
+            ["cmd", "/k", str(script)], env=env, creationflags=flags,
+        )
+        log.info("%s launched (PID %d)", label, proc.pid)
+        return True
+    except OSError as exc:
+        log.error("%s command not found: %s", label, exc)
+        return None
+
+
+def _run_bulk_renewal(config: dict, sessions: list[dict]) -> tuple[int, int]:
+    """Resume all active sessions in visible console windows.
+
+    Returns (success_count, fail_count).
+    """
+    notif = config.get("notifications_enabled", True)
+    env = _clean_env()
+    claude = _find_cmd("claude")
+    successes, failures = 0, 0
+
+    for s in sessions:
+        sid = s["session_id"]
+        slug = s.get("slug", "unknown")
+        result = _launch_visible(
+            [claude, "--resume", sid, "-p", "continue working"],
+            env, f"{slug} ({sid[:8]})",
+        )
+        if result is None:
+            notify("CCAutoRenew", "Bulk renewal failed - claude not found", notif)
+            return (successes, failures + len(sessions) - successes - failures)
+        if result is True:
+            successes += 1
+        else:
+            failures += 1
+            log.warning("Failed to launch session %s (slug %s)", sid[:8], s["slug"])
+
+    # Last resort: if ALL launches failed, try --continue
+    if successes == 0 and sessions:
+        log.info("All resumes failed, trying --continue as last resort")
+        result = _launch_visible(
+            [claude, "--continue", "-p", "continue working"],
+            env, "continue-fallback",
+        )
+        if result is True:
+            successes = 1
+
+    if successes > 0:
+        write_last_activity()
+    summary = f"Renewed {successes}/{successes + failures} sessions"
+    log.info(summary)
+    notify("CCAutoRenew", summary, notif)
+    return (successes, failures)
 
 
 # -- Main loop ---------------------------------------------------------------
@@ -333,8 +377,18 @@ def advance_to_tomorrow(config: dict) -> None:
     log.info("Advanced schedule to tomorrow")
 
 
+def _near_stop_time(config: dict) -> bool:
+    """Return True if within 10 minutes of stop time (don't renew)."""
+    stop = config.get("stop_epoch")
+    return bool(stop and (stop - time.time()) <= 600)
+
+
+MAX_RETRIES = 5  # after this many consecutive failures, long cooldown
+
+
 def main_loop(config: dict) -> None:
     notif = config.get("notifications_enabled", True)
+    consecutive_failures = 0
 
     # Set CWD
     cwd = config.get("cwd", os.getcwd())
@@ -347,7 +401,7 @@ def main_loop(config: dict) -> None:
     notify("CCAutoRenew", "Monitoring active", notif)
 
     while True:
-        # Check if past stop time -> schedule tomorrow
+        # -- Schedule checks (unchanged) --
         if should_restart_tomorrow(config):
             notify("CCAutoRenew", "Monitoring stopped for today", notif)
             advance_to_tomorrow(config)
@@ -359,7 +413,6 @@ def main_loop(config: dict) -> None:
                 time.sleep(sleep_secs)
             continue
 
-        # Check if within active window
         reason = is_monitoring_active(config)
         if reason:
             start = config.get("start_epoch")
@@ -372,26 +425,112 @@ def main_loop(config: dict) -> None:
                 time.sleep(60)
             continue
 
+        # -- Layer 1: JSONL scan for rate_limit errors --
+        limit = scan_for_rate_limit()
+        if limit is not None and not _near_stop_time(config):
+            # Weekly limit: notify only, no renewal possible
+            if limit.get("is_weekly"):
+                log.info("Weekly limit detected, resets at %s -- notify only", limit["reset_str"])
+                notify("CCAutoRenew", f"Weekly limit hit, resets {limit['reset_str']}", notif)
+                time.sleep(600)  # check again in 10min
+                continue
+
+            # Collect all active sessions for bulk renewal
+            sessions = get_active_sessions(since_epoch=time.time() - BLOCK_DURATION)
+            log.info("Found %d active sessions", len(sessions))
+
+            wait_secs = limit["reset_epoch"] - time.time() + 120
+            if wait_secs > 0:
+                log.info("Rate limited, resets at %s, sleeping %ds", limit["reset_str"], int(wait_secs))
+                notify("CCAutoRenew", f"Rate limited, resets at {limit['reset_str']}", notif)
+                time.sleep(wait_secs)
+
+            # Close to reset -- bulk renew all active sessions
+            if sessions:
+                log.info("Rate limit about to reset, renewing %d sessions", len(sessions))
+                successes, failures = _run_bulk_renewal(config, sessions)
+            else:
+                # Fallback: no sessions found, try single renewal
+                sid = limit.get("session_id")
+                log.info("No active sessions found, falling back to single renewal (session %s)", sid)
+                successes = 1 if _run_renewal(config, session_id=sid) else 0
+                failures = 0 if successes else 1
+
+            if successes > 0:
+                log.info("Renewal complete, cooldown 300s")
+                consecutive_failures = 0
+                time.sleep(300)
+            else:
+                consecutive_failures += 1
+                if consecutive_failures >= MAX_RETRIES:
+                    log.error("Renewal failed %d times, cooling down 30min", consecutive_failures)
+                    notify("CCAutoRenew", "Renewal failed repeatedly, pausing 30min", notif)
+                    time.sleep(1800)
+                    consecutive_failures = 0
+                else:
+                    log.info("Renewal failed (%d/%d), retrying in 60s", consecutive_failures, MAX_RETRIES)
+                    time.sleep(60)
+            continue
+
+        # -- Layer 2: ccusage timing for natural block expiry --
         block = query_ccusage(config)
         minutes = get_minutes_until_reset(block)
         log.info("Minutes remaining: %s", minutes if minutes is not None else "unknown (clock fallback)")
 
-        if should_renew(block, minutes, config):
-            # Wait for old block to fully expire before sending message.
-            # Sending during the old block just uses it without triggering renewal.
-            log.info("Renewal triggered, waiting 60s for block expiry")
+        # Check completed-block early end as secondary signal
+        if is_block_exhausted(block) and not _near_stop_time(config):
+            sid = get_latest_session_id()
+            log.info("Completed block exhausted early, waiting 60s then renewing (session %s)", sid)
             time.sleep(60)
-
-            success = start_claude_session(config)
-            if success:
+            if _run_renewal(config, session_id=sid):
                 log.info("Renewal complete, cooldown 300s")
+                consecutive_failures = 0
                 time.sleep(300)
             else:
-                log.info("Renewal failed, retrying in 60s")
-                time.sleep(60)
+                consecutive_failures += 1
+                if consecutive_failures >= MAX_RETRIES:
+                    log.error("Renewal failed %d times, cooling down 30min", consecutive_failures)
+                    notify("CCAutoRenew", "Renewal failed repeatedly, pausing 30min", notif)
+                    time.sleep(1800)
+                    consecutive_failures = 0
+                else:
+                    log.info("Renewal failed (%d/%d), retrying in 60s", consecutive_failures, MAX_RETRIES)
+                    time.sleep(60)
             continue
 
-        sleep_secs = get_sleep_duration(minutes)
+        # Decide if close to natural expiry
+        needs_renew = False
+        if minutes is not None:
+            needs_renew = minutes <= 2
+        else:
+            # Clock fallback (ccusage unavailable)
+            last = read_last_activity()
+            if last is None:
+                needs_renew = True  # no history -- start initial session
+            else:
+                needs_renew = (time.time() - last) >= BLOCK_DURATION
+
+        if needs_renew and not _near_stop_time(config):
+            sid = get_latest_session_id()
+            log.info("Renewal triggered (session %s), waiting 60s for block expiry", sid)
+            time.sleep(60)
+            if _run_renewal(config, session_id=sid):
+                log.info("Renewal complete, cooldown 300s")
+                consecutive_failures = 0
+                time.sleep(300)
+            else:
+                consecutive_failures += 1
+                if consecutive_failures >= MAX_RETRIES:
+                    log.error("Renewal failed %d times, cooling down 30min", consecutive_failures)
+                    notify("CCAutoRenew", "Renewal failed repeatedly, pausing 30min", notif)
+                    time.sleep(1800)
+                    consecutive_failures = 0
+                else:
+                    log.info("Renewal failed (%d/%d), retrying in 60s", consecutive_failures, MAX_RETRIES)
+                    time.sleep(60)
+            continue
+
+        sleep_secs = min(get_sleep_duration(minutes), 120)  # cap for JSONL scan frequency
         log.info("Sleeping %ds", sleep_secs)
         time.sleep(sleep_secs)
 

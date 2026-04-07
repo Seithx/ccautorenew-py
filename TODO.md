@@ -4,78 +4,57 @@
 
 ---
 
-## Phase 0: Setup
-- [x] `py -m pip install plyer` (v2.1.0 installed)
-- [x] Verify ccusage JSON schema (`blocks[0].endTime`)
-- [x] Inspect real `.jsonl` session files for timestamp format
+## Completed Phases (summary)
 
-## Phase 1: Notifications (notify.py)
-- [x] `notify()` wrapper: plyer, try/except, never crash
-- [x] `enabled` flag for `--no-notify`
+Phases 0-10 complete. Key milestones:
+- **P0-P5**: Setup, notify.py, session.py, daemon.py (two-layer detection, clock fallback), manager.py CLI, bash fixes
+- **P6**: 68/68 automated tests passing
+- **P7**: System tray icon (pystray, colored circles, menu, polling)
+- **P8**: Passive JSONL rate limit scanning + weekly limit detection (`is_weekly` flag)
+- **P9**: Session-aware renewal (resume -> continue fallback chain), retry cap, `_clean_env()`
+- **P10**: Multi-session bulk renewal, `_launch_visible()` CMD windows with banner, weekly limit notify-only branch, +120s reset buffer
 
-## Phase 2: Session Module (session.py)
-- [x] `get_claude_data_dirs()`, `get_latest_session_id()`, `get_project_sessions()`
-- [x] Project slug: `C:\path` -> `C--path`
+Bugs fixed: `tasklist` for PID checks, `.cmd` resolution via `shutil.which()`, `taskkill /F` for stops, `OSError` handling, block exhaustion detection, CMD pipe-in-title, stdout swallowing, window auto-close.
 
-## Phase 3: Core Daemon (daemon.py)
-- [x] Config, logging, PID file, signal handling
-- [x] `query_ccusage()` -> returns block dict; fallback ccusage -> npx
-- [x] `get_minutes_until_reset()` -> minutes from block endTime
-- [x] `is_block_exhausted()` -> detects rate-limit vs natural expiry
-- [x] `should_renew()` -> only renews on exhaustion or <=2 min left
-- [x] `start_claude_session()` -> --continue / -r <uuid> / -p <msg> decision tree
-- [x] `main_loop()` -> monitor, renew, sleep; next-day scheduling
-- [x] Clock-based fallback when ccusage unavailable
-- [x] Auto-install ccusage via `npm install -g` on first `start`
+---
 
-## Phase 4: Manager CLI (manager.py)
-- [x] Subcommands: start, stop, restart, status, logs, dash
-- [x] All flags: --at, --stop, --resume, --message, --disable-ccusage, --no-notify, --cwd
-- [x] Detached process launch with PID verification
-
-## Phase 5: Bash .sh Fixes
-- [x] ASCII-safe progress bars, portable date helpers, Windows warnings
-
-## Phase 6: Testing
-### Automated (test_daemon.py) -- 41/41 passing
-- [x] Sleep duration thresholds, should_renew logic, clock fallback
-- [x] Session ID scanning, JSONL parsing, project slugs, Windows paths
-- [x] ccusage JSON parsing (endTime, usageLimitResetTime, empty blocks)
-- [x] Block exhaustion detection (early end, tokenLimitStatus, natural end)
-
-### Manual smoke tests
-- [x] start/stop/restart/status cycle
-- [x] `--at HH:MM` scheduled start
-- [x] `--resume` session resume chain
-- [x] Dashboard renders without encoding errors
-- [x] Notification toast appears in external terminal
+## Pending manual smoke tests
 - [ ] Next-day scheduling: `--stop HH:MM`, wait for expiry, check "Advanced schedule to tomorrow"
 - [ ] Actual renewal: `--resume --disable-ccusage` from external terminal, verify claude session starts
+- [ ] Tray icon: appears, start/stop works, logs open, exit works
+- [ ] JSONL scan: restart daemon, confirm "No rate limit found" + ccusage sleep in logs
+- [ ] Rate limit: hit rate limit, verify "Rate limited, resets at ..." in logs
+
+## Open questions
+- [ ] Bulk renewal may resume a session the user is actively typing in. Options: skip very-recent-activity sessions, or let user configure which to auto-resume.
+
+## Pending
+- [ ] Fork repo to Seithx/CCAutoRenew and push (no write access to aniketkarne/CCAutoRenew)
+
+## Observed Issues (2026-02-24 live test)
+- [ ] ccusage returns empty blocks right after renewal -- may need delay/retry before querying
+- [ ] npx ccusage fallback broken (`EUNSUPPORTEDPROTOCOL` on `runtime:^24.11.0`)
+- [ ] Stale session IDs: JSONL persists longer than Claude's resumable data. `--resume` returns "No conversation found". Accept silent failures + `--continue` fallback, or validate liveness first.
+- [ ] `--resume` on active session requires Enter press (not an issue post-rate-limit, sessions are idle)
+
+## Notification Improvements
+- [ ] Severity titles: "Rate Limited (5h)" vs "WEEKLY LIMIT HIT"
+- [ ] Include time remaining: "resets in 2h 15m (3:00pm)"
+- [ ] Renewal summary: list project slugs succeeded/failed
+- [ ] Longer timeout for weekly limit notifications
 
 ---
 
-## Bugs fixed during smoke testing
-- [x] `os.kill(pid, 0)` -> `tasklist` for detached process checks
-- [x] `.cmd` resolution -> `_find_cmd()` via `shutil.which()`
-- [x] Missing `signal` import in manager.py
-- [x] `CTRL_BREAK_EVENT` -> `taskkill /F` for detached stops
-- [x] `FileNotFoundError` uncaught in subprocess calls -> added `except OSError`
-- [x] Renewal triggered on natural block expiry -> added `is_block_exhausted()` detection
-
----
-
-## Phase 7: System Tray Icon (tray.py)
-- [x] `tray.py`: pystray icon with Pillow-generated colored circles (green/yellow/red)
-- [x] Tooltip: stopped / waiting / running with remaining time
-- [x] Right-click menu: Start/Stop/Restart, status info, Open Logs, Exit Tray
-- [x] Background polling thread (10s interval) updates icon color + tooltip
-- [x] `manager.py tray` subcommand launches tray as detached process
-- [x] `requirements.txt` updated: pystray>=0.19.5, Pillow>=10.0.0
-- [ ] Manual smoke: tray icon appears, start/stop works, logs open, exit works
-
----
+## Next improvements
+- [ ] Filter stale sessions before resume: in `get_active_sessions()`, skip sessions with no assistant messages, very few messages (<2), or old file mtime. Reduces wasted `--resume` attempts on dead sessions. See RESEARCH.md (coding_agent_session_search) for heuristics.
+- [ ] VS Code terminal automation (macro-commander):
+  - [x] Extension installed, macro works inside VS Code (`focusNext` + `sendSequence`)
+  - [x] Confirmed: sends `/continue` to all open terminals
+  - [x] Keybinding set: `Ctrl+Alt+Shift+R` -> `macros.dismissRateLimitAll`
+  - [x] `vscode_trigger.py` written: finds Code.exe via EnumWindows, sends chord via SendInput
+  - [x] External trigger tested: `py vscode_trigger.py --debug` sends chord, macro fires in VS Code
+  - [ ] Integrate into `_run_bulk_renewal()` as alternative to CMD windows
 
 ## Future (v2)
 - [ ] PyInstaller packaging: single .exe
 - [ ] Daemon resilience: Windows Service / Task Scheduler
-- [ ] Fork as Windows-focused variant
