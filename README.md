@@ -1,6 +1,6 @@
 # ccautorenew-py
 
-Windows-first Python daemon that auto-renews Claude Code 5-hour usage blocks. Detects rate limits passively from JSONL logs, bulk-renews all active sessions on reset, and resumes them in-place via a VS Code keystroke macro.
+Windows-first Python daemon that auto-renews Claude Code 5-hour usage blocks. Detects rate limits passively from JSONL logs and bulk-renews all active sessions on reset.
 
 > **Separate project**, inspired by [aniketkarne/CCAutoRenew](https://github.com/aniketkarne/CCAutoRenew) (MIT). The original is a set of bash scripts for Linux/macOS. This is a ground-up Python reimplementation with a different detection model, multi-session support, and Windows-native integration. Not a drop-in replacement -- see [Relationship to the original](#relationship-to-the-original).
 
@@ -42,11 +42,11 @@ py manager.py tray              Launch system tray icon
 |------|--------|
 | `--at HH:MM` | Start monitoring at this time (skips if past) |
 | `--stop HH:MM` | Stop monitoring at this time |
-| `--resume` | Try to continue previous session before starting new one |
-| `--message "text"` | Custom message for new sessions |
 | `--disable-ccusage` | Use clock-based timing only |
 | `--no-notify` | Suppress desktop notifications |
 | `--cwd /path` | Set working directory for Claude sessions |
+
+> `--resume` and `--message "text"` are parsed but not used by the current daemon (tracked in [issue #9](https://github.com/Seithx/ccautorenew-py/issues/9)). Resume is always attempted first (the renewal chain is `--resume <id>` -> `--continue`), and the renewal prompt is hardcoded to `"continue working"` for now.
 
 ## Why ccautorenew-py
 
@@ -96,14 +96,14 @@ The daemon uses a two-layer detection system:
 
 ## VS Code Integration (macro-commander)
 
+**Status**: standalone trigger works today; daemon integration pending ([issue #6](https://github.com/Seithx/ccautorenew-py/issues/6)). The daemon currently opens CMD windows on renewal regardless of whether VS Code is running.
+
 One-time setup:
 1. Install: `code --install-extension jeff-hykin.macro-commander`
 2. Add the `dismissRateLimitAll` macro to VS Code User Settings JSON (see RESEARCH.md)
 3. Add keybinding: `Ctrl+Alt+Shift+R` -> `macros.dismissRateLimitAll`
 
-The daemon auto-detects VS Code windows and sends the keystroke on rate limit reset. Falls back to CMD windows if no VS Code is running.
-
-Manual trigger: `py vscode_trigger.py` or press `Ctrl+Alt+Shift+R` in VS Code.
+Manual trigger: `py vscode_trigger.py` or press `Ctrl+Alt+Shift+R` in VS Code. Both fire the macro, which sends `/continue` to every open VS Code terminal.
 
 ## System Tray
 
