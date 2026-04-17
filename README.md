@@ -1,16 +1,18 @@
-# CCAutoRenew
+# ccautorenew-py
 
-Auto-renew Claude Code 5-hour usage blocks. Python rewrite with Windows support, multi-session bulk renewal, rate limit detection, and desktop notifications.
+Windows-first Python daemon that auto-renews Claude Code 5-hour usage blocks. Detects rate limits passively from JSONL logs, bulk-renews all active sessions on reset, and resumes them in-place via a VS Code keystroke macro.
 
-Based on [aniketkarne/CCAutoRenew](https://github.com/aniketkarne/CCAutoRenew) (MIT License).
+> **Separate project**, inspired by [aniketkarne/CCAutoRenew](https://github.com/aniketkarne/CCAutoRenew) (MIT). The original is a set of bash scripts for Linux/macOS. This is a ground-up Python reimplementation with a different detection model, multi-session support, and Windows-native integration. Not a drop-in replacement -- see [Relationship to the original](#relationship-to-the-original).
 
 ## The Problem
 
-Claude Code uses 5-hour usage blocks. When you hit a rate limit, all your active sessions are blocked until the timer resets. CCAutoRenew monitors your sessions, detects rate limits passively from JSONL logs, and bulk-renews all active sessions the moment the block lifts.
+Claude Code uses 5-hour usage blocks. When you hit a rate limit, every active session is blocked until the timer resets. ccautorenew-py watches your sessions, reads the reset time directly from Claude's own logs, and renews every session the moment the block lifts -- so you don't lose hours to a browser tab you forgot to reopen.
 
 ## Quick Start
 
 ```
+git clone https://github.com/Seithx/ccautorenew-py.git
+cd ccautorenew-py
 pip install -r requirements.txt
 py manager.py start --at 09:00 --stop 17:00
 ```
@@ -39,25 +41,16 @@ py manager.py tray              Launch system tray icon
 | `--no-notify` | Suppress desktop notifications |
 | `--cwd /path` | Set working directory for Claude sessions |
 
-## Why CCAutoRenew
+## Why ccautorenew-py
 
-Most renewal scripts use a simple timer and restart a single session. CCAutoRenew takes a different approach:
+Most renewal scripts use a simple timer and restart a single session. This project takes a different approach:
 
-| Capability | Timer scripts | Bash functions | CCAutoRenew |
-|------------|:---:|:---:|:---:|
-| Multi-session bulk renewal | -- | -- | Yes |
-| Passive detection (no CLI probing) | -- | -- | Yes |
-| In-place VS Code resume | -- | -- | Yes |
-| Weekly limit awareness | -- | -- | Yes |
-| Background daemon | -- | -- | Yes |
-| Adaptive polling | -- | -- | Yes |
-| Desktop notifications | -- | -- | Yes |
-| System tray status | -- | -- | Yes |
-
-- **Multi-session**: Detects and renews all active sessions across all projects, not just the one you were last using.
-- **Passive detection**: Reads rate limit timestamps directly from Claude's JSONL logs. No fragile text parsing of CLI output, no wasted API calls.
-- **In-place resume**: With VS Code integration, sessions resume in their original terminals with full context and permissions intact. No orphaned windows.
-- **Weekly limits**: Distinguishes 5-hour blocks from weekly limits. Notifies without wasting renewal attempts on limits that can't be bypassed.
+- **Multi-session bulk renewal** -- detects and renews every active session across every project, not just the one you were last using
+- **Passive detection** -- reads rate limit timestamps directly from Claude's JSONL logs; no fragile text parsing of CLI output, no wasted API calls
+- **In-place VS Code resume** -- sessions resume in their original terminals with full context and permissions intact; no orphaned windows
+- **Weekly limit awareness** -- distinguishes 5-hour blocks from weekly limits; notifies without wasting renewal attempts on limits that can't be bypassed
+- **Windows-native** -- `SendInput`, `tasklist`, `taskkill`, detached processes; no WSL or cygwin required
+- **System tray** -- colored status icon with start/stop/logs menu
 
 ## How It Works
 
@@ -81,9 +74,9 @@ The daemon uses a two-layer detection system:
 
 ### Renewal strategy
 
-- **VS Code mode** (preferred): Sends `Ctrl+Alt+Shift+R` to all VS Code windows via Win32 `SendInput`. This triggers a [macro-commander](https://github.com/jeff-hykin/macro-commander) macro that sends `/continue` to every open terminal -- sessions resume in-place, no extra windows.
-- **CMD fallback**: For each session: `claude --resume <session_id> -p "continue working"` in a separate CMD window. If all resumes fail: `claude --continue -p "continue working"` as last resort.
-- Claude has full conversation context when resuming -- it continues where it left off
+- **VS Code mode** (preferred): sends `Ctrl+Alt+Shift+R` to all VS Code windows via Win32 `SendInput`. Triggers a [macro-commander](https://github.com/jeff-hykin/macro-commander) macro that sends `/continue` to every open terminal -- sessions resume in-place, no extra windows.
+- **CMD fallback**: for each session: `claude --resume <session_id> -p "continue working"` in a separate CMD window. If all resumes fail: `claude --continue -p "continue working"` as last resort.
+- Claude has full conversation context when resuming
 - Adaptive polling: 10min when >30min left, 2min when 6-30min, 30s when <=5min
 
 ### Scheduling
@@ -94,7 +87,7 @@ The daemon uses a two-layer detection system:
 
 ## VS Code Integration (macro-commander)
 
-Requires one-time setup:
+One-time setup:
 1. Install: `code --install-extension jeff-hykin.macro-commander`
 2. Add the `dismissRateLimitAll` macro to VS Code User Settings JSON (see RESEARCH.md)
 3. Add keybinding: `Ctrl+Alt+Shift+R` -> `macros.dismissRateLimitAll`
@@ -103,17 +96,16 @@ The daemon auto-detects VS Code windows and sends the keystroke on rate limit re
 
 Manual trigger: `py vscode_trigger.py` or press `Ctrl+Alt+Shift+R` in VS Code.
 
+## System Tray
+
+- Green = running, Yellow = waiting, Red = stopped
+- Right-click menu: Start/Stop/Restart, status info, Open Logs, Exit
+
 ## Known Limitations
 
 - Some older sessions may return "No conversation found" when resumed (JSONL files persist longer than Claude's resumable session data). The `--continue` fallback handles this.
 - ccusage may report "No active block" immediately after renewal. The daemon falls back to clock-based timing in this case.
 - VS Code mode requires macro-commander extension and keybinding setup. Without it, CMD windows are used.
-
-## System Tray
-
-The tray icon provides at-a-glance status:
-- Green = running, Yellow = waiting, Red = stopped
-- Right-click menu: Start/Stop/Restart, status info, Open Logs, Exit
 
 ## Requirements
 
@@ -133,7 +125,7 @@ tray.py             System tray icon (pystray, colored status circles)
 vscode_trigger.py   VS Code keystroke sender (Win32 SendInput, macro-commander)
 test_daemon.py      Automated tests (68 tests)
 requirements.txt    Python dependencies
-original/           Original bash scripts (reference)
+original/           Original bash scripts (reference, patched for Windows)
 ```
 
 ## Testing
@@ -142,6 +134,29 @@ original/           Original bash scripts (reference)
 py -m pytest test_daemon.py -v
 ```
 
+## Relationship to the original
+
+This started as a Windows-compatibility fork of [aniketkarne/CCAutoRenew](https://github.com/aniketkarne/CCAutoRenew), then grew into a separate project. The original bash scripts are preserved in `original/` for reference and credit.
+
+**What's the same**: the goal (keep 5-hour blocks renewed), ccusage as an optional timing source, `claude --continue` as a fallback strategy.
+
+**What's different**:
+
+| | aniketkarne/CCAutoRenew | ccautorenew-py |
+|---|:---:|:---:|
+| Language | bash | Python 3.10+ |
+| Platform | Linux / macOS | Windows-first (cross-platform Python) |
+| Detection | Timer + ccusage polling | JSONL log scanning + ccusage |
+| Sessions renewed | Single (last used) | All active across all projects |
+| Rate limit handling | Reactive (on expiry) | Proactive (reads reset time from logs) |
+| Weekly limit awareness | -- | Yes |
+| VS Code integration | -- | macro-commander + SendInput |
+| System tray | -- | Yes |
+| UI | CLI + dashboard | CLI + dashboard + tray |
+| Tests | -- | 68 pytest |
+
+The two projects have diverged enough that upstreaming isn't practical -- use whichever fits your environment. Bug fixes that apply to both are welcome in both places.
+
 ## License
 
-MIT
+MIT -- same as the original. See `LICENSE`.
