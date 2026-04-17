@@ -4,6 +4,13 @@ Windows-first Python daemon that auto-renews Claude Code 5-hour usage blocks. De
 
 > **Separate project**, inspired by [aniketkarne/CCAutoRenew](https://github.com/aniketkarne/CCAutoRenew) (MIT). The original is a set of bash scripts for Linux/macOS. This is a ground-up Python reimplementation with a different detection model, multi-session support, and Windows-native integration. Not a drop-in replacement -- see [Relationship to the original](#relationship-to-the-original).
 
+## Status
+
+Active development. Windows-tested. Current version: **0.3** (multi-session bulk renewal + passive JSONL detection).
+
+- 68 automated tests pass; several manual smoke tests still pending (see [What's wired vs planned](#whats-wired-vs-planned))
+- Known gaps tracked in [issues](https://github.com/Seithx/ccautorenew-py/issues)
+
 ## The Problem
 
 Claude Code uses 5-hour usage blocks. When you hit a rate limit, every active session is blocked until the timer resets. ccautorenew-py watches your sessions, reads the reset time directly from Claude's own logs, and renews every session the moment the block lifts -- so you don't lose hours to a browser tab you forgot to reopen.
@@ -74,8 +81,8 @@ The daemon uses a two-layer detection system:
 
 ### Renewal strategy
 
-- **VS Code mode** (preferred): sends `Ctrl+Alt+Shift+R` to all VS Code windows via Win32 `SendInput`. Triggers a [macro-commander](https://github.com/jeff-hykin/macro-commander) macro that sends `/continue` to every open terminal -- sessions resume in-place, no extra windows.
-- **CMD fallback**: for each session: `claude --resume <session_id> -p "continue working"` in a separate CMD window. If all resumes fail: `claude --continue -p "continue working"` as last resort.
+- **Current (daemon)**: for each active session, opens a CMD window running `claude --resume <session_id> -p "continue working"`. If all resumes fail: `claude --continue -p "continue working"` as last resort.
+- **VS Code mode (planned, manual for now)**: `vscode_trigger.py` sends `Ctrl+Alt+Shift+R` to all VS Code windows via Win32 `SendInput`, which fires a [macro-commander](https://github.com/jeff-hykin/macro-commander) macro that sends `/continue` to every terminal. Works standalone today; daemon integration tracked in [issue #6](https://github.com/Seithx/ccautorenew-py/issues/6).
 - Claude has full conversation context when resuming
 - Adaptive polling: 10min when >30min left, 2min when 6-30min, 30s when <=5min
 
@@ -101,11 +108,30 @@ Manual trigger: `py vscode_trigger.py` or press `Ctrl+Alt+Shift+R` in VS Code.
 - Green = running, Yellow = waiting, Red = stopped
 - Right-click menu: Start/Stop/Restart, status info, Open Logs, Exit
 
-## Known Limitations
+## What's Wired vs Planned
 
-- Some older sessions may return "No conversation found" when resumed (JSONL files persist longer than Claude's resumable session data). The `--continue` fallback handles this.
-- ccusage may report "No active block" immediately after renewal. The daemon falls back to clock-based timing in this case.
-- VS Code mode requires macro-commander extension and keybinding setup. Without it, CMD windows are used.
+### Covered by automated tests (68 pytest tests)
+- JSONL scanning and rate-limit message parsing (weekly + 5h variants)
+- Active session discovery across all projects
+- ccusage block queries and fallback logic
+- Scheduling math (stop time, next-day advance)
+- Renewal command construction, env cleaning, retry caps
+
+### Manually verified on Windows
+- `start` / `stop` / `restart` / `status` / `logs` / `dash` commands
+- Tray icon with colored status circles
+- `vscode_trigger.py` as a standalone trigger (sends chord, macro fires)
+
+### Pending manual verification ([issue #1](https://github.com/Seithx/ccautorenew-py/issues/1))
+- Next-day reschedule after `--stop` cutoff
+- Live renewal from an external terminal
+- JSONL rate-limit scan fire-through in logs
+
+### Known gaps and quirks
+- **VS Code bulk integration not yet wired into the daemon** ([issue #6](https://github.com/Seithx/ccautorenew-py/issues/6)). Manual trigger works; daemon still opens CMD windows.
+- Bulk renewal may resume a session you're actively typing in ([issue #2](https://github.com/Seithx/ccautorenew-py/issues/2))
+- Stale session IDs sometimes return "No conversation found" -- `--continue` fallback handles it ([issue #3](https://github.com/Seithx/ccautorenew-py/issues/3))
+- ccusage may report "No active block" immediately after renewal; daemon falls back to clock-based timing
 
 ## Requirements
 
@@ -156,6 +182,30 @@ This started as a Windows-compatibility fork of [aniketkarne/CCAutoRenew](https:
 | Tests | -- | 68 pytest |
 
 The two projects have diverged enough that upstreaming isn't practical -- use whichever fits your environment. Bug fixes that apply to both are welcome in both places.
+
+## Changelog
+
+### 0.3.0 (2026-04)
+- Multi-session bulk renewal across all projects
+- Passive JSONL rate-limit scanning replaces ccusage probing for exhausted blocks
+- Weekly limit detection (notify-only branch)
+- `_launch_visible()` opens CMD windows with banner titles
+- +120s buffer after reset before renewal fires
+
+### 0.2.0 (2026-03)
+- Session-aware renewal chain: `--resume <id>` -> `--continue` -> `-p <msg>`
+- `_clean_env()` strips `CLAUDECODE` to avoid nested-session block
+- Retry cap: 5 consecutive failures -> 30-minute cooldown
+- System tray (pystray): colored status, right-click menu, background polling
+- `vscode_trigger.py`: external keystroke sender via Win32 `SendInput`
+
+### 0.1.0 (2026-02)
+- Python rewrite of the original bash scripts
+- ccusage block polling with clock-based fallback
+- JSONL session scanner, project slug converter
+- Desktop notifications via plyer
+- Manager CLI: `start` / `stop` / `restart` / `status` / `logs` / `dash`
+- 68 pytest tests
 
 ## License
 
