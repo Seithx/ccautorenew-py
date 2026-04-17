@@ -73,18 +73,20 @@ The daemon uses a two-layer detection system:
 6. Bulk-renews every active session via `claude --resume <session_id> -p "continue working"`
 7. Weekly limits: notifies only (no renewal possible until the weekly timer resets)
 
-### Layer 2: ccusage timing (natural block expiry)
+### Layer 2: ccusage timing (completed-block early termination)
 
-1. Polls [ccusage](https://github.com/ryoppippi/ccusage) for time remaining in current block
-2. When block is about to expire (<=2 min), waits 60s for expiry, then renews the latest session
+1. Polls [ccusage](https://github.com/ryoppippi/ccusage) for block state
+2. If a **completed** block's `actualEndTime` is >5 min before its scheduled `endTime` (early-terminated by rate limit), waits 60s for cleanup, then renews the latest session
 3. Falls back to clock-based timing (5h from last activity) if ccusage is unavailable
+
+> Note: active blocks approaching their 5-hour boundary are **not** handled by Layer 2 anymore. Layer 1's JSONL scan catches those via the rate-limit entry Claude itself logs, which is more reliable than inferring from time remaining.
 
 ### Renewal strategy
 
 - **Current (daemon)**: for each active session, opens a CMD window running `claude --resume <session_id> -p "continue working"`. If all resumes fail: `claude --continue -p "continue working"` as last resort.
 - **VS Code mode (planned, manual for now)**: `vscode_trigger.py` sends `Ctrl+Alt+Shift+R` to all VS Code windows via Win32 `SendInput`, which fires a [macro-commander](https://github.com/jeff-hykin/macro-commander) macro that sends `/continue` to every terminal. Works standalone today; daemon integration tracked in [issue #6](https://github.com/Seithx/ccautorenew-py/issues/6).
 - Claude has full conversation context when resuming
-- Adaptive polling: 10min when >30min left, 2min when 6-30min, 30s when <=5min
+- Polling: capped at 2 min so the JSONL rate-limit scan runs frequently (base cadence is 10/2/0.5 min by time remaining, but capped to 2 min in the main loop)
 
 ### Scheduling
 
